@@ -314,7 +314,7 @@ async function apiCompress(env, req, ctx) {
   if (!ct.toLowerCase().startsWith('multipart/form-data')) return json({ error: 'use_multipart_form_data', field: 'file' }, 415);
   const len = Number(req.headers.get('Content-Length'));
   if (!len) return json({ error: 'content_length_required' }, 411);
-  if (len > MAX_BODY_BYTES) return json({ error: 'file_too_large', max_mb: 10 }, 413);
+  if (len > MAX_BODY_BYTES) return json({ error: 'file_too_large', max_mb: 10, message: 'File must be 10 MB or smaller on the free plan.' }, 413);
 
   const user = await apiUser(env, req);
   if (!user) return json({ error: 'invalid_api_key' }, 401);

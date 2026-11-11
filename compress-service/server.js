@@ -141,7 +141,7 @@ app.post('/v1/compress', requireInternal, (req, res) => {
     let acquired = false;
     try {
       if (uploadErr) {
-        if (uploadErr.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'file_too_large', max_mb: 10 });
+        if (uploadErr.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'file_too_large', max_mb: 10, message: 'File must be 10 MB or smaller on the free plan.' });
         return res.status(400).json({ error: 'bad_upload' });
       }
       if (!input) return res.status(400).json({ error: 'missing_file', hint: 'send multipart/form-data with field "file"' });
