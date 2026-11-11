@@ -1,7 +1,7 @@
 // editpdf.tools Compress PDF API - Cloudflare Worker (api.editpdf.tools)
 // - Public API: POST /v1/compress, GET /v1/me
 // - Users: email link login (no passwords), one API key per user, dashboard
-// - Admin: /admin, protected by Cloudflare Access (+ JWT check here as a second lock)
+// - Admin: /admin, email-link login only for ADMIN_EMAILS (no Cloudflare Access needed)
 // - Own D1 database. Does not touch the website or its Supabase.
 // License: AGPL-3.0-only
 
@@ -23,10 +23,6 @@ function b64url(bytes) {
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
-function b64urlDecode(str) {
-  const s = str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4);
-  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-}
 function randomToken(n = 32) { return b64url(crypto.getRandomValues(new Uint8Array(n))); }
 async function sha256(text) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -46,8 +42,10 @@ function cookie(req, name) {
   return m ? m[1] : null;
 }
 function sameOrigin(req) {
+  // Browsers may send "Origin: null" for form posts; then fall back to Sec-Fetch-Site.
   const origin = req.headers.get('Origin');
-  return !!origin && origin === new URL(req.url).origin;
+  if (origin && origin !== 'null') return origin === new URL(req.url).origin;
+  return req.headers.get('Sec-Fetch-Site') === 'same-origin';
 }
 function clientIp(req) { return req.headers.get('CF-Connecting-IP') || 'unknown'; }
 const isLocal = (req) => ['localhost', '127.0.0.1'].includes(new URL(req.url).hostname);
@@ -101,7 +99,7 @@ ${body}
     headers: {
       'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
       'Content-Security-Policy': CSP, 'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'no-referrer', ...extraHeaders,
+      'Referrer-Policy': 'same-origin', ...extraHeaders,
     },
   });
 }
@@ -119,17 +117,20 @@ function cfg(env) {
 }
 
 // ---------- email ----------
-async function sendLoginEmail(env, req, to, link) {
+async function sendLoginEmail(env, req, to, link, kind = 'user') {
   if (env.EMAIL_MODE === 'log' && isLocal(req)) { console.log('DEV LOGIN LINK for', to, link); return true; }
   if (!env.RESEND_API_KEY) return false;
+  const admin = kind === 'admin';
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       from: env.EMAIL_FROM || 'editpdf.tools API <noreply@editpdf.tools>',
       to: [to],
-      subject: 'Your editpdf.tools API sign-in link',
-      text: `Use this link to sign in to the editpdf.tools Compress PDF API dashboard:\n\n${link}\n\nThe link works once and expires in 20 minutes. If you did not ask for it, ignore this email.`,
+      subject: admin ? 'editpdf.tools API admin sign-in link' : 'Your editpdf.tools API sign-in link',
+      text: admin
+        ? `Admin sign-in for the editpdf.tools Compress PDF API:\n\n${link}\n\nThe link works once and expires in 10 minutes. If you did not ask for it, someone pressed the admin sign-in button. No action is needed, but tell the team.`
+        : `Use this link to sign in to the editpdf.tools Compress PDF API dashboard:\n\n${link}\n\nThe link works once and expires in 20 minutes. If you did not ask for it, ignore this email.`,
     }),
   });
   return r.ok;
@@ -237,7 +238,7 @@ async function handleAuth(env, req) {
   if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
   const t = now();
   const row = await env.DB.prepare(
-    'UPDATE tokens SET used_at = ?1 WHERE token_hash = ?2 AND used_at IS NULL AND expires_at > ?1 RETURNING user_id'
+    "UPDATE tokens SET used_at = ?1 WHERE token_hash = ?2 AND used_at IS NULL AND expires_at > ?1 AND user_id NOT LIKE 'admin:%' RETURNING user_id"
   ).bind(t, await sha256(token)).first();
   if (!row) return page('Link expired', '<h1>This link has expired or was already used</h1><p><a href="/signup">Get a new link</a></p>', 400);
   const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(row.user_id).first();
@@ -348,14 +349,18 @@ async function apiCompress(env, req, ctx) {
       body: req.body,
     });
   } catch (e) {
+    console.error('backend_fetch_failed', e && e.name, e && e.message);
     ctx.waitUntil(undoRate());
     return json({ error: 'service_starting_retry_in_60s' }, 503, { 'Retry-After': '60' });
   }
 
   if (res.status !== 200) {
+    console.error('backend_status', res.status, res.headers.get('content-type'), res.headers.get('server'), res.headers.get('x-render-routing'));
     if (res.status >= 500 || res.status === 401) ctx.waitUntil(undoRate());
+    if (res.status === 502) ctx.waitUntil(fetch(`${env.BACKEND_URL}/health`).catch(() => {})); // try to wake the backend
     if (res.status === 401) return json({ error: 'service_misconfigured' }, 502);
     const text = await res.text();
+    if (res.status >= 500) console.error('backend_body', text.replace(/\s+/g, ' ').slice(0, 400));
     let body; try { body = JSON.parse(text); } catch { body = { error: res.status >= 500 ? 'service_starting_retry_in_60s' : 'upstream_error' }; }
     return json(body, res.status >= 500 ? 503 : res.status, res.status >= 500 ? { 'Retry-After': '60' } : {});
   }
@@ -383,35 +388,75 @@ async function apiCompress(env, req, ctx) {
   return new Response(res.body, { status: 200, headers });
 }
 
-// ---------- admin (Cloudflare Access) ----------
-let jwksCache = { at: 0, keys: [] };
-async function accessEmail(env, req) {
-  const jwt = req.headers.get('Cf-Access-Jwt-Assertion');
-  if (!jwt || !env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD || !env.ADMIN_EMAILS) return null;
-  const parts = jwt.split('.');
-  if (parts.length !== 3) return null;
-  let header, payload;
-  try {
-    header = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[0])));
-    payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1])));
-  } catch { return null; }
-  if (header.alg !== 'RS256') return null;
-  const issuer = env.ACCESS_ISSUER || `https://${env.ACCESS_TEAM_DOMAIN}`;
-  if (Date.now() - jwksCache.at > 3600 * 1000 || !jwksCache.keys.find((k) => k.kid === header.kid)) {
-    const r = await fetch(env.ACCESS_CERTS_URL || `${issuer}/cdn-cgi/access/certs`);
-    if (!r.ok) return null;
-    jwksCache = { at: Date.now(), keys: (await r.json()).keys || [] };
+// ---------- admin (email-link login, only ADMIN_EMAILS) ----------
+const ADMIN_TOKEN_TTL = 10 * 60;      // admin link valid 10 min
+const ADMIN_SESSION_TTL = 12 * 3600;  // admin session 12 h
+const adminList = (env) => String(env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+
+async function adminEmail(env, req) {
+  const sid = cookie(req, '__Host-adm');
+  if (!sid) return null;
+  const row = await env.DB.prepare(
+    "SELECT user_id FROM sessions WHERE sid_hash = ?1 AND expires_at > ?2 AND user_id LIKE 'admin:%'"
+  ).bind(await sha256(sid), now()).first();
+  if (!row) return null;
+  const email = row.user_id.slice(6);
+  return adminList(env).includes(email) ? email : null;
+}
+
+function adminLoginForm(env, msg = '') {
+  return page('Admin sign-in', `<h1>Admin sign-in</h1>
+<p>A one-time sign-in link will be sent to the admin email address on file.</p>
+${msg ? `<p class="bad">${esc(msg)}</p>` : ''}
+<form class="card" method="post" action="/admin/login">
+<div class="cf-turnstile" data-sitekey="${esc(env.TURNSTILE_SITE_KEY || '')}" style="margin:0 0 12px"></div>
+<button type="submit">Send admin sign-in link</button></form>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`);
+}
+
+async function adminLogin(env, req) {
+  if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
+  const form = await req.formData().catch(() => null);
+  if (!form || !(await verifyTurnstile(env, req, form.get('cf-turnstile-response')))) return adminLoginForm(env, 'Bot check failed. Please try again.');
+  const admins = adminList(env);
+  const sent = page('Check the admin inbox', '<h1>Check the admin inbox</h1><p>If sign-in is possible, a link is on its way. It works once and expires in 10 minutes.</p>');
+  if (!admins.length) return sent;
+  const t = now();
+  const hour = Math.floor(t / 3600);
+  if ((await bump(env, `adminlink:${hour}`, 1, t + 7200)) > 5) return sent;          // max 5 admin emails per hour
+  if ((await counter(env, `emails:${dayKey()}`)) >= cfg(env).emailDailyCap) return sent;
+  for (const email of admins) {
+    const token = randomToken();
+    await env.DB.prepare('INSERT INTO tokens (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)')
+      .bind(await sha256(token), 'admin:' + email, t + ADMIN_TOKEN_TTL).run();
+    const link = `${new URL(req.url).origin}/admin/auth?t=${token}`;
+    if (await sendLoginEmail(env, req, email, link, 'admin')) await bump(env, `emails:${dayKey()}`, 1, t + 3 * 86400);
   }
-  const jwk = jwksCache.keys.find((k) => k.kid === header.kid);
-  if (!jwk) return null;
-  const key = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
-  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, b64urlDecode(parts[2]), new TextEncoder().encode(parts[0] + '.' + parts[1]));
-  if (!valid) return null;
-  const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (!aud.includes(env.ACCESS_AUD) || payload.iss !== issuer || !(payload.exp > now())) return null;
-  const email = String(payload.email || '').toLowerCase();
-  const admins = env.ADMIN_EMAILS.split(',').map((s) => s.trim().toLowerCase());
-  return admins.includes(email) ? email : null;
+  return sent;
+}
+
+async function adminAuth(env, req) {
+  const token = new URL(req.url).searchParams.get('t') || '';
+  if (req.method === 'GET') {
+    return page('Admin sign-in', `<h1>Admin sign-in</h1><form class="card" method="post" action="/admin/auth?t=${esc(encodeURIComponent(token))}">
+<p>Click to finish signing in.</p><button type="submit">Continue to admin</button></form>`);
+  }
+  if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
+  const t = now();
+  const row = await env.DB.prepare(
+    "UPDATE tokens SET used_at = ?1 WHERE token_hash = ?2 AND used_at IS NULL AND expires_at > ?1 AND user_id LIKE 'admin:%' RETURNING user_id"
+  ).bind(t, await sha256(token)).first();
+  if (!row || !adminList(env).includes(row.user_id.slice(6))) {
+    return page('Link expired', '<h1>This link has expired or was already used</h1><p><a href="/admin">Get a new link</a></p>', 400);
+  }
+  const sid = randomToken();
+  await env.DB.prepare('INSERT INTO sessions (sid_hash, user_id, expires_at) VALUES (?1, ?2, ?3)')
+    .bind(await sha256(sid), row.user_id, t + ADMIN_SESSION_TTL).run();
+  await audit(env, row.user_id.slice(6), 'admin_sign_in', null);
+  return new Response(null, {
+    status: 303,
+    headers: { Location: '/admin', 'Set-Cookie': `__Host-adm=${sid}; Path=/; Max-Age=${ADMIN_SESSION_TTL}; HttpOnly; Secure; SameSite=Strict` },
+  });
 }
 
 async function adminPage(env, req, admin, msg = '') {
@@ -439,7 +484,7 @@ async function adminPage(env, req, admin, msg = '') {
 <option value="quota">Set quota</option><option value="revoke_keys">Revoke key</option></select>
 <input name="quota" type="number" min="0" max="100000" placeholder="quota" style="width:90px">
 <button type="submit">Apply</button></form></td></tr>`).join('');
-  return page('Admin', `<h1>API admin</h1><p class="muted">Signed in as ${esc(admin)} (Cloudflare Access)</p>
+  return page('Admin', `<h1>API admin</h1><div class="row"><p class="muted" style="margin:0">Signed in as ${esc(admin)}</p><form method="post" action="/admin/logout"><button class="ghost" type="submit">Sign out</button></form></div>
 ${msg ? `<p class="ok">${esc(msg)}</p>` : ''}
 <div class="card"><h2>This month (${month}, UTC)</h2>
 <p>Files: ${files} / ${c.globalFiles} global cap · Output: ${(bytes / MB).toFixed(1)} MB / ${(c.globalBytes / MB).toFixed(0)} MB cap · Sign-in emails today: ${emails} / ${c.emailDailyCap}</p>
@@ -491,10 +536,17 @@ export default {
       if (p === '/health') return json({ status: 'ok' });
 
       if (p === '/admin' || p.startsWith('/admin/')) {
-        const admin = await accessEmail(env, req);
-        if (!admin) return page('Forbidden', '<h1>Forbidden</h1>', 403);
+        if (p === '/admin/login' && m === 'POST') return adminLogin(env, req);
+        if (p === '/admin/auth') return adminAuth(env, req);
+        const admin = await adminEmail(env, req);
+        if (!admin) return p === '/admin' && m === 'GET' ? adminLoginForm(env) : page('Forbidden', '<h1>Forbidden</h1>', 403);
         if (p === '/admin' && m === 'GET') return adminPage(env, req, admin);
         if (p === '/admin/action' && m === 'POST') return adminAction(env, req, admin);
+        if (p === '/admin/logout' && m === 'POST') {
+          if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
+          await env.DB.prepare('DELETE FROM sessions WHERE sid_hash = ?1').bind(await sha256(cookie(req, '__Host-adm') || '')).run();
+          return new Response(null, { status: 303, headers: { Location: '/admin', 'Set-Cookie': '__Host-adm=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict' } });
+        }
         return page('Not found', '<h1>Not found</h1>', 404);
       }
 
@@ -527,7 +579,10 @@ export default {
   // Cron: keep the free backend awake and clean old rows.
   async scheduled(_event, env, ctx) {
     ctx.waitUntil((async () => {
-      try { await fetch(`${env.BACKEND_URL}/health`); } catch (_) { /* ignore */ }
+      try {
+        const r = await fetch(`${env.BACKEND_URL}/health`);
+        if (r.status !== 200) console.error('keepwarm_status', r.status, r.headers.get('x-render-routing'));
+      } catch (e) { console.error('keepwarm_failed', e && e.message); }
       const t = now();
       await env.DB.batch([
         env.DB.prepare('DELETE FROM tokens WHERE expires_at < ?1').bind(t - 86400),
