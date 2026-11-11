@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+*.pdf
+*.tar.gz
+DEPLOY_STEPS.md

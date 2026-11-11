@@ -1,0 +1,13 @@
+{
+  "name": "editpdf-api-worker",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "wrangler": "^4.159.0"
+  },
+  "private": true
+}

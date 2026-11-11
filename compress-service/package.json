@@ -1,0 +1,14 @@
+{
+  "name": "editpdf-compress-service",
+  "version": "1.0.0",
+  "description": "editpdf.tools Compress PDF API service (Ghostscript wrapper)",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "AGPL-3.0-only",
+  "dependencies": {
+    "express": "^4.22.3",
+    "multer": "^2.5.0"
+  },
+  "private": true
+}

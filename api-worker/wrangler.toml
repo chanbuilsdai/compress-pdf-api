@@ -1,0 +1,37 @@
+# editpdf.tools Compress PDF API - Cloudflare Worker (free plan)
+name = "editpdf-api"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+# Custom domain: creates api.editpdf.tools automatically on first deploy.
+routes = [{ pattern = "api.editpdf.tools", custom_domain = true }]
+
+# Keep the free backend awake (every 10 min) + clean old rows
+[triggers]
+crons = ["*/10 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "editpdf-api"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+
+[vars]
+BACKEND_URL = "REPLACE_WITH_RENDER_URL"          # e.g. https://editpdf-compress.onrender.com
+DEFAULT_MONTHLY_QUOTA = "30"
+GLOBAL_MONTHLY_FILES = "1000"
+GLOBAL_MONTHLY_BYTES_OUT = "4294967296"           # 4 GB, below Render free 5 GB bandwidth
+EMAIL_DAILY_CAP = "40"                            # Resend free 100/day is shared with the website
+SIGNUPS_PER_IP_HOUR = "5"
+EMAIL_FROM = "editpdf.tools API <noreply@editpdf.tools>"
+TURNSTILE_SITE_KEY = "REPLACE_WITH_TURNSTILE_SITE_KEY"
+ADMIN_EMAILS = "sales@editpdf.tools"
+ACCESS_TEAM_DOMAIN = "REPLACE_WITH_TEAM.cloudflareaccess.com"
+ACCESS_AUD = "REPLACE_WITH_ACCESS_APPLICATION_AUD"
+API_PAUSED = "false"
+
+# Secrets (set with `npx wrangler secret put NAME`, never in this file):
+#   INTERNAL_SECRET   same value as on Render
+#   RESEND_API_KEY    new Resend key, Sending access, editpdf.tools only
+#   TURNSTILE_SECRET
+#   HASH_SALT         any long random string

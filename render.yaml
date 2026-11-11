@@ -1,0 +1,15 @@
+# Render Blueprint: free web service for the Ghostscript compression backend
+services:
+  - type: web
+    name: editpdf-compress
+    runtime: docker
+    plan: free
+    dockerfilePath: ./compress-service/Dockerfile
+    dockerContext: ./compress-service
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: INTERNAL_SECRET
+        sync: false        # paste the value in the Render dashboard, never in git
+      - key: MAX_PARALLEL_JOBS
+        value: "1"
