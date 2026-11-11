@@ -6,7 +6,10 @@ CREATE TABLE IF NOT EXISTS users (
   monthly_quota INTEGER,                           -- NULL = use DEFAULT_MONTHLY_QUOTA
   created_at INTEGER NOT NULL,
   verified_at INTEGER,
-  last_call_at INTEGER NOT NULL DEFAULT 0          -- for the per-minute limit
+  last_call_at INTEGER NOT NULL DEFAULT 0,         -- for the per-minute limit
+  max_file_mb INTEGER,                             -- NULL = default (10)
+  rate_window_s INTEGER,                           -- NULL = default (60); 0 = none
+  note TEXT
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -51,4 +54,10 @@ CREATE TABLE IF NOT EXISTS audit (
   actor TEXT NOT NULL,
   action TEXT NOT NULL,
   detail TEXT
+);
+
+CREATE TABLE IF NOT EXISTS settings (              -- e.g. int:zapier -> 2 (MB)
+  name TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER
 );

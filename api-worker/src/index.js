@@ -10,7 +10,23 @@ const MAX_FILE_BYTES = 10 * MB;
 const MAX_BODY_BYTES = MAX_FILE_BYTES + 1.5 * MB; // multipart overhead
 const TOKEN_TTL = 20 * 60;          // email link valid 20 min
 const SESSION_TTL = 7 * 24 * 3600;  // 7 days
-const RATE_WINDOW = 60;             // 1 file per minute per user
+const RATE_WINDOW = 60;             // default: 1 file per minute per user
+const HARD_MAX_MB = 10;             // backend hard limit (Render free)
+
+// Per-user limits set by admin (NULL = default)
+function userLimits(user) {
+  const maxMb = Math.min(HARD_MAX_MB, user.max_file_mb ?? HARD_MAX_MB);
+  const rate = user.rate_window_s ?? RATE_WINDOW;
+  return { maxMb, rate };
+}
+// Optional per-integration file limit (X-Integration header, value set by admin)
+async function integrationLimit(env, req) {
+  const name = (req.headers.get('X-Integration') || '').trim().toLowerCase();
+  if (!/^[a-z0-9-]{1,32}$/.test(name)) return null;
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE name = ?1').bind('int:' + name).first();
+  return row ? { name, maxMb: Number(row.value) } : null;
+}
+const rateText = (r) => (r === 0 ? 'no per-minute limit' : r === 60 ? '1 file per minute' : `1 file every ${r} seconds`);
 
 // ---------- small helpers ----------
 const now = () => Math.floor(Date.now() / 1000);
@@ -267,7 +283,7 @@ async function dashboard(env, req, user, newKey = null) {
   return page('Dashboard', `
 <h1>Your API dashboard</h1><p class="muted">Signed in as ${esc(user.email)}</p>
 ${newKey ? `<div class="card"><h2 class="ok">Your new API key</h2><p><strong>Copy it now. It will not be shown again.</strong></p><pre>${esc(newKey)}</pre></div>` : ''}
-<div class="card"><h2>Usage this month (UTC)</h2><p>${used} of ${quota} files used. Limit: 1 file per minute, 10 MB per file.</p></div>
+<div class="card"><h2>Usage this month (UTC)</h2><p>${used} of ${quota} files used. Limits: ${rateText(userLimits(user).rate)}, ${userLimits(user).maxMb} MB per file.</p></div>
 <div class="card"><h2>API key</h2>
 ${key ? `<p>Active key: <code>${esc(key.prefix)}…</code> (created ${new Date(key.created_at * 1000).toISOString().slice(0, 10)})</p>` : '<p>You have no active key yet.</p>'}
 <form method="post" action="/dashboard/key"><button type="submit">${key ? 'Replace key (old key stops working)' : 'Create API key'}</button></form></div>
@@ -304,7 +320,8 @@ async function apiMe(env, req) {
   const quota = user.monthly_quota ?? cfg(env).defaultQuota;
   const u = await env.DB.prepare('SELECT files FROM usage WHERE user_id = ?1 AND month = ?2').bind(user.id, monthKey()).first();
   const used = u ? u.files : 0;
-  return json({ email: user.email, month: monthKey(), files_used: used, monthly_quota: quota, files_remaining: Math.max(0, quota - used), max_file_mb: 10 });
+  const lim = userLimits(user);
+  return json({ email: user.email, month: monthKey(), files_used: used, monthly_quota: quota, files_remaining: Math.max(0, quota - used), max_file_mb: lim.maxMb, seconds_between_files: lim.rate });
 }
 
 async function apiCompress(env, req, ctx) {
@@ -320,6 +337,17 @@ async function apiCompress(env, req, ctx) {
   if (!user) return json({ error: 'invalid_api_key' }, 401);
   if (user.status !== 'active') return json({ error: 'account_blocked' }, 403);
 
+  const lim = userLimits(user);
+  let maxMb = lim.maxMb;
+  const il = await integrationLimit(env, req);
+  if (il && il.maxMb < maxMb) maxMb = il.maxMb;
+  if (len > maxMb * MB + 64 * 1024) {
+    const message = il && il.maxMb === maxMb && il.maxMb < lim.maxMb
+      ? `Max ${maxMb} MB via ${il.name}. Use the API directly for files up to ${lim.maxMb} MB.`
+      : `File must be ${maxMb} MB or smaller on your plan.`;
+    return json({ error: 'file_too_large', max_mb: maxMb, message }, 413);
+  }
+
   const month = monthKey();
   const quota = user.monthly_quota ?? c.defaultQuota;
   const u = await env.DB.prepare('SELECT files FROM usage WHERE user_id = ?1 AND month = ?2').bind(user.id, month).first();
@@ -329,12 +357,12 @@ async function apiCompress(env, req, ctx) {
     return json({ error: 'service_capacity_reached_this_month' }, 503, { 'Retry-After': '86400' });
   }
 
-  // 1 file per minute: atomic check-and-set
+  // per-user rate limit (default 1 file per minute): atomic check-and-set
   const t = now();
   const ok = await env.DB.prepare('UPDATE users SET last_call_at = ?1 WHERE id = ?2 AND last_call_at <= ?3')
-    .bind(t, user.id, t - RATE_WINDOW).run();
+    .bind(t, user.id, t - lim.rate).run();
   if (!ok.meta || ok.meta.changes !== 1) {
-    const wait = Math.max(1, RATE_WINDOW - (t - user.last_call_at));
+    const wait = Math.max(1, lim.rate - (t - user.last_call_at));
     return json({ error: 'rate_limited', retry_after_seconds: wait }, 429, { 'Retry-After': String(wait) });
   }
   const undoRate = () => env.DB.prepare('UPDATE users SET last_call_at = ?1 WHERE id = ?2').bind(user.last_call_at, user.id).run();
@@ -459,40 +487,91 @@ async function adminAuth(env, req) {
   });
 }
 
-async function adminPage(env, req, admin, msg = '') {
+// "" -> null (use default); otherwise an integer in [min, max]; undefined on bad input
+function optInt(v, min, max) {
+  const t = String(v ?? '').trim();
+  if (t === '') return null;
+  if (!/^\d+$/.test(t)) return undefined;
+  const n = parseInt(t, 10);
+  return n >= min && n <= max ? n : undefined;
+}
+
+async function adminPage(env, req, admin, msg = '', created = null) {
   const c = cfg(env);
   const month = monthKey();
   const q = (new URL(req.url).searchParams.get('q') || '').trim().toLowerCase().slice(0, 100);
   const users = await env.DB.prepare(
-    `SELECT u.id, u.email, u.status, u.monthly_quota, u.created_at, COALESCE(us.files,0) AS files,
+    `SELECT u.id, u.email, u.status, u.monthly_quota, u.max_file_mb, u.rate_window_s, u.note, u.created_at, COALESCE(us.files,0) AS files,
      (SELECT prefix FROM api_keys k WHERE k.user_id = u.id AND k.revoked_at IS NULL LIMIT 1) AS key_prefix
      FROM users u LEFT JOIN usage us ON us.user_id = u.id AND us.month = ?1
-     WHERE (?2 = '' OR u.email LIKE '%' || ?2 || '%') ORDER BY u.created_at DESC LIMIT 200`
+     WHERE (?2 = '' OR u.email LIKE '%' || ?2 || '%' OR u.note LIKE '%' || ?2 || '%') ORDER BY u.created_at DESC LIMIT 200`
   ).bind(month, q).all();
   const counts = await env.DB.prepare("SELECT status, COUNT(*) AS n FROM users GROUP BY status").all();
   const logs = await env.DB.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 30').all();
+  const ints = await env.DB.prepare("SELECT name, value FROM settings WHERE name LIKE 'int:%' ORDER BY name").all();
   const files = await counter(env, `files:${month}`);
   const bytes = await counter(env, `bytes:${month}`);
   const emails = await counter(env, `emails:${dayKey()}`);
-  const rows = users.results.map((u) => `<tr>
-<td>${esc(u.email)}<br><span class="muted">${new Date(u.created_at * 1000).toISOString().slice(0, 10)}</span></td>
+  const v = (x) => (x == null ? '' : esc(x));
+  const rows = users.results.map((u) => {
+    const lim = userLimits(u);
+    return `<tr>
+<td>${esc(u.email)}<br><span class="muted">${new Date(u.created_at * 1000).toISOString().slice(0, 10)}${u.note ? ' · ' + esc(u.note) : ''}</span></td>
 <td class="${u.status === 'blocked' ? 'bad' : u.status === 'active' ? 'ok' : ''}">${esc(u.status)}</td>
-<td>${u.files} / ${u.monthly_quota ?? c.defaultQuota}</td><td>${u.key_prefix ? `<code>${esc(u.key_prefix)}…</code>` : '-'}</td>
+<td>${u.files} / ${u.monthly_quota ?? c.defaultQuota}<br><span class="muted">${lim.maxMb} MB · ${esc(rateText(lim.rate))}</span></td>
+<td>${u.key_prefix ? `<code>${esc(u.key_prefix)}…</code>` : '-'}</td>
 <td><form method="post" action="/admin/action" class="row">
 <input type="hidden" name="user_id" value="${esc(u.id)}">
 <select name="action"><option value="${u.status === 'blocked' ? 'unblock' : 'block'}">${u.status === 'blocked' ? 'Unblock' : 'Block'}</option>
-<option value="quota">Set quota</option><option value="revoke_keys">Revoke key</option></select>
-<input name="quota" type="number" min="0" max="100000" placeholder="quota" style="width:90px">
-<button type="submit">Apply</button></form></td></tr>`).join('');
+<option value="revoke_keys">Revoke key</option><option value="new_key">New key (shown once)</option></select>
+<button type="submit">Apply</button></form>
+<details><summary>Limits</summary><form method="post" action="/admin/action" class="row" style="margin-top:6px">
+<input type="hidden" name="user_id" value="${esc(u.id)}"><input type="hidden" name="action" value="limits">
+<label>Files/month <input name="quota" type="number" min="0" max="100000" value="${v(u.monthly_quota)}" placeholder="${c.defaultQuota}" style="width:90px"></label>
+<label>Max MB <input name="max_mb" type="number" min="1" max="${HARD_MAX_MB}" value="${v(u.max_file_mb)}" placeholder="${HARD_MAX_MB}" style="width:70px"></label>
+<label>Seconds between files <input name="rate_s" type="number" min="0" max="3600" value="${v(u.rate_window_s)}" placeholder="${RATE_WINDOW}" style="width:80px"></label>
+<label>Note <input name="note" maxlength="60" value="${v(u.note)}" placeholder="e.g. zapier-test" style="width:140px"></label>
+<button type="submit">Save</button></form><p class="muted">Empty = default. 0 seconds = no per-minute limit.</p></details></td></tr>`;
+  }).join('');
+  const intRows = ints.results.map((r) => `<tr><td><code>${esc(r.name.slice(4))}</code></td><td>${esc(r.value)} MB</td>
+<td><form method="post" action="/admin/integration"><input type="hidden" name="name" value="${esc(r.name.slice(4))}"><input type="hidden" name="max_mb" value="">
+<button class="ghost" type="submit">Remove</button></form></td></tr>`).join('');
   return page('Admin', `<h1>API admin</h1><div class="row"><p class="muted" style="margin:0">Signed in as ${esc(admin)}</p><form method="post" action="/admin/logout"><button class="ghost" type="submit">Sign out</button></form></div>
-${msg ? `<p class="ok">${esc(msg)}</p>` : ''}
+${msg ? `<p class="${created ? 'ok' : 'bad'}">${esc(msg)}</p>` : ''}
+${created ? `<div class="card"><h2 class="ok">API key for ${esc(created.email)}</h2><p><strong>Copy it now. It will not be shown again.</strong> Send it to the reviewer through a private channel.</p><pre>${esc(created.key)}</pre></div>` : ''}
 <div class="card"><h2>This month (${month}, UTC)</h2>
 <p>Files: ${files} / ${c.globalFiles} global cap · Output: ${(bytes / MB).toFixed(1)} MB / ${(c.globalBytes / MB).toFixed(0)} MB cap · Sign-in emails today: ${emails} / ${c.emailDailyCap}</p>
 <p>Users: ${counts.results.map((r) => `${esc(r.status)} ${r.n}`).join(' · ') || '0'} · API ${c.paused ? '<strong class="bad">PAUSED</strong>' : 'running'}</p></div>
-<form class="row" method="get" action="/admin"><input name="q" value="${esc(q)}" placeholder="search email"><button class="ghost" type="submit">Search</button></form>
-<div class="card" style="overflow:auto"><table><tr><th>User</th><th>Status</th><th>Files this month</th><th>Key</th><th>Action</th></tr>${rows || '<tr><td colspan="5">No users</td></tr>'}</table></div>
+<div class="card"><h2>Create test account + API key</h2>
+<form method="post" action="/admin/create" class="row">
+<label>Email <input name="email" type="email" required maxlength="254" placeholder="integration-testing@zapier.com" style="width:260px"></label>
+<label>Files/month <input name="quota" type="number" min="0" max="100000" placeholder="${c.defaultQuota}" style="width:90px"></label>
+<label>Max MB <input name="max_mb" type="number" min="1" max="${HARD_MAX_MB}" placeholder="${HARD_MAX_MB}" style="width:70px"></label>
+<label>Seconds between files <input name="rate_s" type="number" min="0" max="3600" placeholder="${RATE_WINDOW}" style="width:80px"></label>
+<label>Note <input name="note" maxlength="60" placeholder="e.g. zapier-review" style="width:140px"></label>
+<button type="submit">Create account + key</button></form>
+<p class="muted">The account is active at once. If the email already exists, its limits are updated and its old key is replaced.</p></div>
+<div class="card"><h2>Integration file limits</h2>
+<p class="muted">Applied when a request sends the header <code>X-Integration: name</code>. The smaller of this and the user's limit wins.</p>
+<table><tr><th>Integration</th><th>Max file</th><th></th></tr>${intRows || '<tr><td colspan="3">None set (all use the user limit)</td></tr>'}</table>
+<form method="post" action="/admin/integration" class="row" style="margin-top:8px">
+<label>Name <input name="name" required pattern="[a-z0-9-]{1,32}" placeholder="zapier" style="width:140px"></label>
+<label>Max MB <input name="max_mb" type="number" min="1" max="${HARD_MAX_MB}" required style="width:70px"></label>
+<button type="submit">Save</button></form></div>
+<form class="row" method="get" action="/admin"><input name="q" value="${esc(q)}" placeholder="search email or note"><button class="ghost" type="submit">Search</button></form>
+<div class="card" style="overflow:auto"><table><tr><th>User</th><th>Status</th><th>This month / limits</th><th>Key</th><th>Action</th></tr>${rows || '<tr><td colspan="5">No users</td></tr>'}</table></div>
 <div class="card"><h2>Recent activity</h2><table>${logs.results.map((l) => `<tr><td>${new Date(l.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td><td>${esc(l.actor)}</td><td>${esc(l.action)}</td><td>${esc(l.detail || '')}</td></tr>`).join('')}</table></div>`);
 }
+
+function readLimits(f) {
+  const quota = optInt(f.get('quota'), 0, 100000);
+  const maxMb = optInt(f.get('max_mb'), 1, HARD_MAX_MB);
+  const rate = optInt(f.get('rate_s'), 0, 3600);
+  const note = String(f.get('note') || '').trim().slice(0, 60) || null;
+  if (quota === undefined || maxMb === undefined || rate === undefined) return null;
+  return { quota, maxMb, rate, note };
+}
+const limitsText = (l) => `quota=${l.quota ?? 'default'} max_mb=${l.maxMb ?? 'default'} rate_s=${l.rate ?? 'default'}${l.note ? ' note=' + l.note : ''}`;
 
 async function adminAction(env, req, admin) {
   if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
@@ -502,6 +581,7 @@ async function adminAction(env, req, admin) {
   const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?1').bind(id).first();
   if (!user) return adminPage(env, req, admin, 'User not found');
   const t = now();
+  let detail = user.email;
   if (action === 'block') {
     await env.DB.batch([
       env.DB.prepare("UPDATE users SET status = 'blocked' WHERE id = ?1").bind(id),
@@ -509,16 +589,65 @@ async function adminAction(env, req, admin) {
     ]);
   } else if (action === 'unblock') {
     await env.DB.prepare("UPDATE users SET status = CASE WHEN verified_at IS NULL THEN 'pending' ELSE 'active' END WHERE id = ?1").bind(id).run();
-  } else if (action === 'quota') {
-    const qv = parseInt(String(f.get('quota') || ''), 10);
-    if (!(qv >= 0 && qv <= 100000)) return adminPage(env, req, admin, 'Enter a quota between 0 and 100000');
-    await env.DB.prepare('UPDATE users SET monthly_quota = ?1 WHERE id = ?2').bind(qv, id).run();
+  } else if (action === 'limits') {
+    const l = readLimits(f);
+    if (!l) return adminPage(env, req, admin, `Check the numbers: files/month 0-100000, max MB 1-${HARD_MAX_MB}, seconds 0-3600.`);
+    await env.DB.prepare('UPDATE users SET monthly_quota = ?1, max_file_mb = ?2, rate_window_s = ?3, note = ?4 WHERE id = ?5')
+      .bind(l.quota, l.maxMb, l.rate, l.note, id).run();
+    detail += ' ' + limitsText(l);
   } else if (action === 'revoke_keys') {
     await env.DB.prepare('UPDATE api_keys SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL').bind(t, id).run();
+  } else if (action === 'new_key') {
+    if (user.status === 'blocked') return adminPage(env, req, admin, 'Unblock the user first.');
+    const key = await createKey(env, user);
+    await audit(env, admin, 'new_key', user.email);
+    return adminPage(env, req, admin, 'New key created.', { email: user.email, key });
   } else {
     return adminPage(env, req, admin, 'Unknown action');
   }
-  await audit(env, admin, action, `${user.email}${action === 'quota' ? ' -> ' + f.get('quota') : ''}`);
+  await audit(env, admin, action, detail);
+  return Response.redirect(new URL('/admin', req.url).toString(), 303);
+}
+
+async function adminCreate(env, req, admin) {
+  if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
+  const f = await req.formData();
+  const email = String(f.get('email') || '').trim().toLowerCase();
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return adminPage(env, req, admin, 'Enter a valid email.');
+  const l = readLimits(f);
+  if (!l) return adminPage(env, req, admin, `Check the numbers: files/month 0-100000, max MB 1-${HARD_MAX_MB}, seconds 0-3600.`);
+  const t = now();
+  let user = await env.DB.prepare('SELECT * FROM users WHERE email = ?1').bind(email).first();
+  if (!user) {
+    user = { id: crypto.randomUUID(), email };
+    await env.DB.prepare(
+      "INSERT INTO users (id, email, status, monthly_quota, max_file_mb, rate_window_s, note, created_at, verified_at) VALUES (?1, ?2, 'active', ?3, ?4, ?5, ?6, ?7, ?7)"
+    ).bind(user.id, email, l.quota, l.maxMb, l.rate, l.note, t).run();
+  } else {
+    await env.DB.prepare(
+      "UPDATE users SET status = 'active', verified_at = COALESCE(verified_at, ?1), monthly_quota = ?2, max_file_mb = ?3, rate_window_s = ?4, note = ?5 WHERE id = ?6"
+    ).bind(t, l.quota, l.maxMb, l.rate, l.note, user.id).run();
+  }
+  const key = await createKey(env, user);
+  await audit(env, admin, 'create_user_key', `${email} ${limitsText(l)}`);
+  return adminPage(env, req, admin, 'Account ready.', { email, key });
+}
+
+async function adminIntegration(env, req, admin) {
+  if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
+  const f = await req.formData();
+  const name = String(f.get('name') || '').trim().toLowerCase();
+  if (!/^[a-z0-9-]{1,32}$/.test(name)) return adminPage(env, req, admin, 'Integration name: lowercase letters, numbers and dashes only.');
+  const mb = optInt(f.get('max_mb'), 1, HARD_MAX_MB);
+  if (mb === undefined) return adminPage(env, req, admin, `Max MB must be 1-${HARD_MAX_MB}.`);
+  if (mb === null) {
+    await env.DB.prepare('DELETE FROM settings WHERE name = ?1').bind('int:' + name).run();
+    await audit(env, admin, 'integration_limit_removed', name);
+  } else {
+    await env.DB.prepare('INSERT INTO settings (name, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+      .bind('int:' + name, String(mb), now()).run();
+    await audit(env, admin, 'integration_limit', `${name} ${mb} MB`);
+  }
   return Response.redirect(new URL('/admin', req.url).toString(), 303);
 }
 
@@ -542,6 +671,8 @@ export default {
         if (!admin) return p === '/admin' && m === 'GET' ? adminLoginForm(env) : page('Forbidden', '<h1>Forbidden</h1>', 403);
         if (p === '/admin' && m === 'GET') return adminPage(env, req, admin);
         if (p === '/admin/action' && m === 'POST') return adminAction(env, req, admin);
+        if (p === '/admin/create' && m === 'POST') return adminCreate(env, req, admin);
+        if (p === '/admin/integration' && m === 'POST') return adminIntegration(env, req, admin);
         if (p === '/admin/logout' && m === 'POST') {
           if (!sameOrigin(req)) return page('Error', '<h1>Request blocked</h1>', 403);
           await env.DB.prepare('DELETE FROM sessions WHERE sid_hash = ?1').bind(await sha256(cookie(req, '__Host-adm') || '')).run();
