@@ -17,8 +17,8 @@ const path = require('path');
 
 const PORT = process.env.PORT || 8080;
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || '';
-const MAX_FILE_BYTES = 30 * 1024 * 1024; // 30 MB
-const GS_TIMEOUT_MS = 120 * 1000;
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB (Render free has 0.1 CPU)
+const GS_TIMEOUT_MS = 150 * 1000;
 const MAX_PARALLEL_JOBS = Number(process.env.MAX_PARALLEL_JOBS || 2);
 const GS_BIN = process.env.GS_BIN || 'gs';
 const QPDF_BIN = process.env.QPDF_BIN || 'qpdf';
@@ -141,7 +141,7 @@ app.post('/v1/compress', requireInternal, (req, res) => {
     let acquired = false;
     try {
       if (uploadErr) {
-        if (uploadErr.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'file_too_large', max_mb: 30 });
+        if (uploadErr.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'file_too_large', max_mb: 10 });
         return res.status(400).json({ error: 'bad_upload' });
       }
       if (!input) return res.status(400).json({ error: 'missing_file', hint: 'send multipart/form-data with field "file"' });

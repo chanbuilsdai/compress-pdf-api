@@ -6,7 +6,7 @@ API key and quota, then forwards the request here with the `X-Internal-Secret` h
 
 ## Endpoint
 `POST /v1/compress` (multipart/form-data)
-- `file`: the PDF (max 30 MB)
+- `file`: the PDF (max 10 MB)
 - `level`: `light` | `recommended` (default) | `strong`
 
 Returns the compressed PDF. Headers: `X-Original-Size`, `X-Compressed-Size`, `X-Compressed`
@@ -17,7 +17,7 @@ Errors (JSON): 401 unauthorized, 400 missing_file / bad_level, 413 file_too_larg
 504 processing_timeout.
 
 ## Safety
-- Ghostscript runs with `-dSAFER`, via execFile (no shell), 120 s timeout, max 2 jobs per instance.
+- Ghostscript runs with `-dSAFER`, via execFile (no shell), 150 s timeout, max 2 jobs per instance.
 - File must start with `%PDF-`; password-protected PDFs are refused (checked with qpdf).
 - The output must have the same page count as the input, or the request fails.
 - Input and output files are deleted right after the response. Nothing is stored.

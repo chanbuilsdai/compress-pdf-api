@@ -6,7 +6,7 @@
 // License: AGPL-3.0-only
 
 const MB = 1024 * 1024;
-const MAX_FILE_BYTES = 30 * MB;
+const MAX_FILE_BYTES = 10 * MB;
 const MAX_BODY_BYTES = MAX_FILE_BYTES + 1.5 * MB; // multipart overhead
 const TOKEN_TTL = 20 * 60;          // email link valid 20 min
 const SESSION_TTL = 7 * 24 * 3600;  // 7 days
@@ -165,7 +165,7 @@ function landing(env) {
 <h1>Compress PDF API</h1>
 <p>Compress PDF files from your own app, Zapier-style automations or scripts. Files are processed on our server and deleted right after the response. Nothing is stored.</p>
 <div class="card"><h2>Free plan</h2><ul>
-<li>${c.defaultQuota} files per month, 1 file per minute</li><li>Max file size 30 MB</li><li>Levels: light, recommended, strong</li></ul>
+<li>${c.defaultQuota} files per month, 1 file per minute</li><li>Max file size 10 MB</li><li>Levels: light, recommended, strong</li></ul>
 <p><a href="/signup">Get a free API key</a> · <a href="/dashboard">Dashboard</a></p></div>
 <div class="card"><h2>Example</h2>
 <pre>curl -X POST https://api.editpdf.tools/v1/compress \\
@@ -267,7 +267,7 @@ async function dashboard(env, req, user, newKey = null) {
   return page('Dashboard', `
 <h1>Your API dashboard</h1><p class="muted">Signed in as ${esc(user.email)}</p>
 ${newKey ? `<div class="card"><h2 class="ok">Your new API key</h2><p><strong>Copy it now. It will not be shown again.</strong></p><pre>${esc(newKey)}</pre></div>` : ''}
-<div class="card"><h2>Usage this month (UTC)</h2><p>${used} of ${quota} files used. Limit: 1 file per minute, 30 MB per file.</p></div>
+<div class="card"><h2>Usage this month (UTC)</h2><p>${used} of ${quota} files used. Limit: 1 file per minute, 10 MB per file.</p></div>
 <div class="card"><h2>API key</h2>
 ${key ? `<p>Active key: <code>${esc(key.prefix)}…</code> (created ${new Date(key.created_at * 1000).toISOString().slice(0, 10)})</p>` : '<p>You have no active key yet.</p>'}
 <form method="post" action="/dashboard/key"><button type="submit">${key ? 'Replace key (old key stops working)' : 'Create API key'}</button></form></div>
@@ -304,7 +304,7 @@ async function apiMe(env, req) {
   const quota = user.monthly_quota ?? cfg(env).defaultQuota;
   const u = await env.DB.prepare('SELECT files FROM usage WHERE user_id = ?1 AND month = ?2').bind(user.id, monthKey()).first();
   const used = u ? u.files : 0;
-  return json({ email: user.email, month: monthKey(), files_used: used, monthly_quota: quota, files_remaining: Math.max(0, quota - used), max_file_mb: 30 });
+  return json({ email: user.email, month: monthKey(), files_used: used, monthly_quota: quota, files_remaining: Math.max(0, quota - used), max_file_mb: 10 });
 }
 
 async function apiCompress(env, req, ctx) {
@@ -314,7 +314,7 @@ async function apiCompress(env, req, ctx) {
   if (!ct.toLowerCase().startsWith('multipart/form-data')) return json({ error: 'use_multipart_form_data', field: 'file' }, 415);
   const len = Number(req.headers.get('Content-Length'));
   if (!len) return json({ error: 'content_length_required' }, 411);
-  if (len > MAX_BODY_BYTES) return json({ error: 'file_too_large', max_mb: 30 }, 413);
+  if (len > MAX_BODY_BYTES) return json({ error: 'file_too_large', max_mb: 10 }, 413);
 
   const user = await apiUser(env, req);
   if (!user) return json({ error: 'invalid_api_key' }, 401);
