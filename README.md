@@ -13,5 +13,9 @@ curl -X POST https://api.editpdf.tools/v1/compress \
   -H "X-API-Key: YOUR_KEY" -F "file=@input.pdf" -F "level=recommended" -o compressed.pdf
 ```
 
+## Examples
+Runnable examples in curl, Python (single file or a folder), Node.js, PHP and a GitHub Actions workflow are in [`examples/`](examples/).
+Walkthrough: https://chanbuilsdai.github.io/compress-pdf-api/
+
 ## License
 AGPL-3.0-only. Uses the unmodified Ghostscript binary (AGPL, Artifex Software) and qpdf (Apache-2.0).

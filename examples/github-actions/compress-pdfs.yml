@@ -1,0 +1,49 @@
+# Compress every PDF that changes in a push, with the editpdf.tools Compress PDF API.
+# Copy this file to .github/workflows/compress-pdfs.yml in your repository and add
+# a repository secret EDITPDF_API_KEY (Settings > Secrets and variables > Actions).
+# The compressed files are attached to the run as an artifact named "compressed-pdfs".
+#
+# Free plan: 30 files per month, up to 10 MB each, 1 file per minute, so the job
+# waits about a minute between files.
+# Docs: https://editpdf.tools/compress-pdf-api
+name: Compress PDFs
+
+on:
+  push:
+    paths: ['**.pdf']
+
+jobs:
+  compress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Compress changed PDFs
+        env:
+          EDITPDF_API_KEY: ${{ secrets.EDITPDF_API_KEY }}
+        run: |
+          mkdir -p compressed
+          first=1
+          git diff --name-only --diff-filter=AM HEAD~1 HEAD -- '*.pdf' | while read -r f; do
+            [ "$first" = 1 ] || sleep 61   # free plan: 1 file per minute
+            first=0
+            out="compressed/$(basename "${f%.*}")-compressed.pdf"
+            code=$(curl -sS -X POST https://api.editpdf.tools/v1/compress \
+              -H "X-API-Key: $EDITPDF_API_KEY" \
+              -F "file=@${f};type=application/pdf" -F "level=recommended" \
+              -o "$out" -w '%{http_code}')
+            if [ "$code" = "200" ]; then
+              echo "OK  $f ($(stat -c%s "$f") -> $(stat -c%s "$out") bytes)"
+            else
+              echo "::warning::$f failed with HTTP $code: $(cat "$out")"
+              rm -f "$out"
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compressed-pdfs
+          path: compressed/
+          if-no-files-found: ignore

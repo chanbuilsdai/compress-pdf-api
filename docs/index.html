@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compress PDF API Examples: curl, Python, Node.js, PHP, GitHub Actions</title>
+<meta name="description" content="Copy-paste examples for a free Compress PDF API: curl, Python batch script, Node.js, PHP and a GitHub Actions workflow, with rate limits and error handling.">
+<link rel="canonical" href="https://chanbuilsdai.github.io/compress-pdf-api/">
+<meta property="og:title" content="Compress PDF API Examples: curl, Python, Node.js, PHP, GitHub Actions">
+<meta property="og:description" content="Runnable examples for compressing PDFs over HTTPS with a free API key.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://chanbuilsdai.github.io/compress-pdf-api/">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"TechArticle","headline":"Compress PDF API Examples: curl, Python, Node.js, PHP, GitHub Actions","description":"Runnable examples for the editpdf.tools Compress PDF API, with rate limits and error handling.","dateModified":"2026-11-12","author":{"@type":"Organization","name":"editpdf.tools","url":"https://editpdf.tools/"},"about":{"@type":"WebAPI","name":"editpdf.tools Compress PDF API","documentation":"https://editpdf.tools/compress-pdf-api"}}
+</script>
+<style>
+:root{--bg:#fbfaf6;--fg:#1f2420;--muted:#5d6358;--line:#dcd9cf;--card:#fff;--code:#f1efe8;--accent:#3f6b3a}
+@media (prefers-color-scheme:dark){:root{--bg:#151816;--fg:#e8e6df;--muted:#a3a89c;--line:#2f342f;--card:#1c201d;--code:#222723;--accent:#8fc287}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+main{max-width:820px;margin:0 auto;padding:32px 16px 48px}
+h1{font-size:32px;line-height:1.25;margin:0 0 12px}
+h2{font-size:23px;margin:40px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
+h3{font-size:18px;margin:24px 0 8px}
+p,li{color:var(--fg)}
+.lede{font-size:18px;color:var(--muted)}
+a{color:var(--accent)}
+code{font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;overflow-x:auto}
+pre code{background:none;padding:0;overflow-wrap:normal}
+table{width:100%;border-collapse:collapse;font-size:15px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+.wrap{overflow-x:auto}
+nav.toc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:20px 0}
+nav.toc ol{margin:6px 0 0;padding-left:20px}
+.note{background:var(--card);border-left:3px solid var(--accent);padding:10px 14px;border-radius:4px}
+footer{max-width:820px;margin:0 auto;padding:24px 16px 40px;border-top:1px solid var(--line);color:var(--muted);font-size:14px}
+footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>Compress PDF API Examples: curl, Python, Node.js, PHP and GitHub Actions</h1>
+<p class="lede">Runnable examples for the free <a href="https://editpdf.tools/compress-pdf-api">editpdf.tools Compress PDF API</a>. Send a PDF over HTTPS, get a smaller PDF back. Every script below is in the <a href="https://github.com/chanbuilsdai/compress-pdf-api/tree/main/examples">examples folder</a> of this repository and was tested against the API's response format.</p>
+
+<nav class="toc" aria-label="Contents"><strong>On this page</strong>
+<ol>
+<li><a href="#quick-start">Quick start with curl</a></li>
+<li><a href="#python">Compress PDFs in Python (single file or a folder)</a></li>
+<li><a href="#nodejs">Reduce PDF size in Node.js</a></li>
+<li><a href="#php">Compress a PDF in PHP</a></li>
+<li><a href="#github-actions">Compress PDFs automatically with GitHub Actions</a></li>
+<li><a href="#limits">Limits, levels and errors</a></li>
+<li><a href="#not-the-right-tool">When an API is not the right tool</a></li>
+</ol></nav>
+
+<h2 id="quick-start">1. Quick start with curl</h2>
+<p>Get a free API key at <a href="https://api.editpdf.tools/signup">api.editpdf.tools</a> (email sign-in, no card). Then:</p>
+<pre><code>curl -X POST https://api.editpdf.tools/v1/compress \
+  -H "X-API-Key: $EDITPDF_API_KEY" \
+  -F "file=@input.pdf" \
+  -F "level=recommended" \
+  -D - -o compressed.pdf</code></pre>
+<p>The response body is the compressed PDF. The headers tell you what happened:</p>
+<div class="wrap"><table>
+<tr><th>Header</th><th>Meaning</th></tr>
+<tr><td><code>X-Original-Size</code></td><td>Size of the file you sent, in bytes</td></tr>
+<tr><td><code>X-Compressed-Size</code></td><td>Size of the file you got back, in bytes</td></tr>
+<tr><td><code>X-Compressed</code></td><td><code>false</code> when the PDF could not be made smaller; you then get your original file back, never a bigger one</td></tr>
+<tr><td><code>X-Quota-Remaining</code></td><td>Files left on your plan this month</td></tr>
+</table></div>
+<p>Script version with error output: <a href="https://github.com/chanbuilsdai/compress-pdf-api/blob/main/examples/curl/compress.sh">examples/curl/compress.sh</a>.</p>
+
+<h2 id="python">2. Compress PDFs in Python (single file or a folder)</h2>
+<p>The Python example compresses one PDF or every PDF in a folder, writes <code>name-compressed.pdf</code> next to each file and waits when the API asks it to (HTTP 429 with <code>Retry-After</code>), so a batch job respects the free plan's one-file-per-minute limit.</p>
+<pre><code>pip install requests
+export EDITPDF_API_KEY=ept_your_key
+python compress_pdf.py report.pdf
+python compress_pdf.py ./invoices --level strong</code></pre>
+<p>The core of it:</p>
+<pre><code>import requests
+
+with open("report.pdf", "rb") as fh:
+    res = requests.post(
+        "https://api.editpdf.tools/v1/compress",
+        headers={"X-API-Key": API_KEY},
+        files={"file": ("report.pdf", fh, "application/pdf")},
+        data={"level": "recommended"},
+        timeout=180,
+    )
+
+if res.status_code == 200:
+    open("report-compressed.pdf", "wb").write(res.content)
+elif res.status_code == 429:
+    wait = int(res.headers.get("Retry-After", 60))  # try again after `wait` seconds
+else:
+    print(res.json())  # {"error": "...", "message": "..."}</code></pre>
+<p>Full script: <a href="https://github.com/chanbuilsdai/compress-pdf-api/blob/main/examples/python/compress_pdf.py">examples/python/compress_pdf.py</a>.</p>
+
+<h2 id="nodejs">3. Reduce PDF size in Node.js</h2>
+<p>Node.js 20 and later have <code>fetch</code>, <code>FormData</code> and <code>openAsBlob</code> built in, so no packages are needed.</p>
+<pre><code>import { openAsBlob } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+
+const form = new FormData();
+form.append('file', await openAsBlob('input.pdf', { type: 'application/pdf' }), 'input.pdf');
+form.append('level', 'recommended');
+
+const res = await fetch('https://api.editpdf.tools/v1/compress', {
+  method: 'POST',
+  headers: { 'X-API-Key': process.env.EDITPDF_API_KEY },
+  body: form,
+});
+if (!res.ok) throw new Error((await res.json()).error);
+await writeFile('input-compressed.pdf', Buffer.from(await res.arrayBuffer()));</code></pre>
+<p>Full script with retries: <a href="https://github.com/chanbuilsdai/compress-pdf-api/blob/main/examples/node/compress-pdf.mjs">examples/node/compress-pdf.mjs</a>.</p>
+
+<h2 id="php">4. Compress a PDF in PHP</h2>
+<pre><code>$ch = curl_init('https://api.editpdf.tools/v1/compress');
+curl_setopt_array($ch, [
+    CURLOPT_POST           =&gt; true,
+    CURLOPT_HTTPHEADER     =&gt; ['X-API-Key: ' . getenv('EDITPDF_API_KEY')],
+    CURLOPT_POSTFIELDS     =&gt; [
+        'file'  =&gt; new CURLFile('input.pdf', 'application/pdf', 'input.pdf'),
+        'level' =&gt; 'recommended',
+    ],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+    CURLOPT_TIMEOUT        =&gt; 180,
+]);
+$pdf = curl_exec($ch);
+if (curl_getinfo($ch, CURLINFO_RESPONSE_CODE) === 200) {
+    file_put_contents('input-compressed.pdf', $pdf);
+}</code></pre>
+<p>Full script that also prints the sizes and quota: <a href="https://github.com/chanbuilsdai/compress-pdf-api/blob/main/examples/php/compress-pdf.php">examples/php/compress-pdf.php</a>.</p>
+
+<h2 id="github-actions">5. Compress PDFs automatically with GitHub Actions</h2>
+<p>Keep large PDFs out of your releases or docs folder: this workflow runs on every push that adds or changes a PDF, compresses each one and attaches the results to the run as an artifact.</p>
+<ol>
+<li>Copy <a href="https://github.com/chanbuilsdai/compress-pdf-api/blob/main/examples/github-actions/compress-pdfs.yml">compress-pdfs.yml</a> to <code>.github/workflows/</code> in your repository.</li>
+<li>Add your key as a repository secret named <code>EDITPDF_API_KEY</code> (Settings, Secrets and variables, Actions).</li>
+<li>Push a PDF. The compressed copies appear under the run's artifacts as <code>compressed-pdfs</code>.</li>
+</ol>
+<pre><code>on:
+  push:
+    paths: ['**.pdf']
+jobs:
+  compress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - name: Compress changed PDFs
+        env: { EDITPDF_API_KEY: "${{ secrets.EDITPDF_API_KEY }}" }
+        run: |   # full loop with the 61 s pause is in the example file
+          ...</code></pre>
+<p class="note">On the free plan the workflow pauses about a minute between files. For many PDFs per push, ask for higher limits through the <a href="https://editpdf.tools/contact">contact page</a>.</p>
+
+<h2 id="limits">6. Limits, levels and errors</h2>
+<div class="wrap"><table>
+<tr><th>Free plan</th><th>Value</th></tr>
+<tr><td>Files per month</td><td>30</td></tr>
+<tr><td>Largest file</td><td>10 MB</td></tr>
+<tr><td>Speed limit</td><td>1 file per minute</td></tr>
+<tr><td>Price</td><td>Free, email sign-in, no card</td></tr>
+</table></div>
+<div class="wrap"><table>
+<tr><th><code>level</code></th><th>What it does</th><th>Use it for</th></tr>
+<tr><td><code>light</code></td><td>Images kept at 300 dpi</td><td>Documents you will print</td></tr>
+<tr><td><code>recommended</code> (default)</td><td>Images at 150 dpi</td><td>Email, upload portals, most uses</td></tr>
+<tr><td><code>strong</code></td><td>Images at 72 dpi</td><td>Smallest file, screen reading only</td></tr>
+</table></div>
+<div class="wrap"><table>
+<tr><th>Status</th><th><code>error</code></th><th>What to do</th></tr>
+<tr><td>401</td><td><code>invalid_api_key</code></td><td>Check the <code>X-API-Key</code> header</td></tr>
+<tr><td>413</td><td><code>file_too_large</code></td><td>Split the PDF first, or compress it in the browser (below)</td></tr>
+<tr><td>415</td><td><code>not_a_pdf</code></td><td>Send a PDF in the <code>file</code> field of a multipart form</td></tr>
+<tr><td>422</td><td><code>pdf_is_password_protected</code></td><td>Remove the password first</td></tr>
+<tr><td>429</td><td><code>rate_limited</code></td><td>Wait <code>Retry-After</code> seconds and send again</td></tr>
+<tr><td>429</td><td><code>monthly_quota_reached</code></td><td>Resets on the 1st of the month (UTC)</td></tr>
+<tr><td>503</td><td><code>service_starting_retry_in_60s</code></td><td>Send again after <code>Retry-After</code> seconds</td></tr>
+</table></div>
+<p>Reference for every field: <a href="https://editpdf.tools/compress-pdf-api">Compress PDF API documentation</a> and the <a href="https://editpdf.tools/compress-pdf-api/openapi.json">OpenAPI spec</a>.</p>
+
+<h2 id="not-the-right-tool">7. When an API is not the right tool</h2>
+<p>The API sends your file to the server, compresses it with Ghostscript and deletes it after the response. Sometimes a browser tool fits better:</p>
+<ul>
+<li>The file is private and must not leave your computer: <a href="https://editpdf.tools/compress-pdf">Compress PDF in the browser</a> does the work on your device.</li>
+<li>The file is over 10 MB: cut it into parts with <a href="https://editpdf.tools/pdf-split">Split PDF</a> first.</li>
+<li>You need one PDF from several files: join them with <a href="https://editpdf.tools/pdf-merge">Merge PDF</a>, then compress.</li>
+<li>You have photos or scans, not a PDF: make one with <a href="https://editpdf.tools/image-to-pdf">Image to PDF</a>.</li>
+<li>A form wants a photo under a size in KB: use <a href="https://editpdf.tools/compress-image-to-kb">Compress Image to KB</a>.</li>
+</ul>
+</main>
+<footer>
+<p>The API and these examples are open source under AGPL-3.0: <a href="https://github.com/chanbuilsdai/compress-pdf-api">chanbuilsdai/compress-pdf-api</a>. Last updated 12 November 2026.</p>
+<p>More free tools from editpdf.tools: <a href="https://editpdf.tools/pdf-sign">PDF Sign</a> · <a href="https://editpdf.tools/pdf-form-fill">PDF Form Fill</a> · <a href="https://editpdf.tools/pdf-page-numbers">PDF Page Numbers</a> · <a href="https://editpdf.tools/pdf-watermark">PDF Watermark</a> · <a href="https://editpdf.tools/id-front-back-to-pdf">ID Front &amp; Back to PDF</a> · <a href="https://editpdf.tools/image-compress">Image Compress</a> · <a href="https://editpdf.tools/image-format-convert">Image Format Convert</a> · <a href="https://editpdf.tools/image-resize-crop">Image Resize &amp; Crop</a> · <a href="https://editpdf.tools/video-frame-extractor">Video Frame Extractor</a> · <a href="https://editpdf.tools/">All tools</a></p>
+</footer>
+</body>
+</html>
